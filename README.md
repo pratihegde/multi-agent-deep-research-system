@@ -8,7 +8,7 @@ LangGraph-based multi-agent research assistant with:
 
 ## Architecture Document
 
-- Deliverable file: `docs/Architecture_Deliverable.md`
+- Deliverable file: `docs/Architecture_Doc.md`
 - Includes Deliverable 2 and Deliverable 3 sections with Mermaid diagrams.
 
 ## Why Exa + Firecrawl + Tavily

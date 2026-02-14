@@ -6,10 +6,11 @@
 
 ```mermaid
 flowchart LR
-    U[User Browser UI] --> F[React + Vite Frontend]
-    F -->|POST /chat (SSE)| API[FastAPI API Layer]
+    U[User Browser UI] --> F[React Vite Frontend]
+    F --> CHAT[POST chat SSE]
+    CHAT --> API[FastAPI Service]
 
-    API --> TS[Thread Store\nIn-memory by thread_id]
+    API --> TS[Thread Store in-memory per thread_id]
     API --> WF[LangGraph Workflow Engine]
 
     subgraph Agents
@@ -60,11 +61,11 @@ Data flow summary:
 ```mermaid
 flowchart TD
     S([START]) --> PLAN[plan]
-    PLAN -->|skip_web_research=true| WRITE[write_report]
-    PLAN -->|skip_web_research=false| RESEARCH[research]
+    PLAN -->|skip_web_research true| WRITE[write_report]
+    PLAN -->|skip_web_research false| RESEARCH[research]
     RESEARCH --> WRITE
     WRITE --> QUALITY[quality_check]
-    QUALITY -->|needs_rewrite=true and iterations < 1| WRITE
+    QUALITY -->|needs_rewrite true and iterations lt 1| WRITE
     QUALITY -->|else| E([END])
 ```
 
