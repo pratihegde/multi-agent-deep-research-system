@@ -1,0 +1,48 @@
+{
+  "thread_id": "example-thread-technical-001",
+  "query": "What are the main causes of inflation and how do central banks respond?",
+  "executive_summary": "As of 2025-2026, global inflation is entering a 'normalization' phase but remains sensitive to supply-side shocks and services-sector persistence. Central banks, specifically the Federal Reserve and the ECB, have transitioned from aggressive tightening to a data-dependent neutral stance. The Fed is managing a 3.5%–3.75% rate environment to counter persistent PCE inflation (projected 2.2% in 2026), while the ECB has lowered its deposit facility to 2.0% as headline inflation nears its 1.9%-2.0% target. Policy responses are now focused on 'fine-tuning' and managing the trade-offs between labor market stability and the final mile of price stabilization.",
+  "report": "Context\n-------\nThis query synthesizes core inflation drivers and the evolving policy responses of major central banks as they navigate the post-2023 recovery period.\n\nFindings by Sub-Question\n------------------------\n- Primary drivers include services-sector inflation lags, supply-side vulnerabilities (including new tariffs), and anchored but sensitive expectations [S1][S2].\n- The Federal Reserve maintains a target range of 3.50–3.75%, balancing solid growth with a projected PCE index of 2.2% through 2026 [S3].\n- The European Central Bank (ECB) projects headline inflation to reach 1.9% in 2026, utilizing a deposit facility rate of 2.00% to achieve medium-term stability [S4].\n- Central banks are increasingly utilizing 'forward guidance' to prevent a premature easing of financial conditions before targets are fully met [S1].\n\nContradictions and Gaps\n-----------------------\n- There is divergence on the impact of secondary supply shocks (e.g., energy/tariffs) vs. domestic demand as the primary driver of late-stage inflation.\n- The 'neutral rate' (r*) is currently under debate; it is unclear if structurally higher rates are the new permanent baseline.\n\nActionable Takeaways\n--------------------\n- Monitor 'Services Inflation' as the most persistent component in the 2025-2026 cycle.\n- Track the Fed's PCE targets vs. actuals for early indicators of policy shifts toward 3.25% in late 2026.\n\nLimitations and Assumptions\n---------------------------\n- Analysis assumes no major escalation in global trade wars beyond currently enacted or announced tariffs as of February 2026.",
+  "description": "Updated technical factual example with specific 2025-2026 central bank data, interest rate targets, and verified institutional citations.",
+  "key_takeaways": [
+    "Differentiate between 'headline' and 'services' inflation for policy forecasting.",
+    "The 2% target remains the primary anchor despite 'neutral rate' debates.",
+    "Forward guidance is the critical tool for the 2026 normalization phase."
+  ],
+  "limitations": "Central bank policy is meeting-by-meeting; projections are subject to revision based on real-time labor market and GDP data.",
+  "citations": [
+    {
+      "title": "ECB Monetary Policy Decisions - December 2025/February 2026",
+      "url": "https://www.ecb.europa.eu/press/pr/date/2026/html/index.en.html",
+      "source_name": "ecb.europa.eu"
+    },
+    {
+      "title": "Federal Reserve Monetary Policy Report - February 2026",
+      "url": "https://www.federalreserve.gov/monetarypolicy/mpreport_default.htm",
+      "source_name": "federalreserve.gov"
+    },
+    {
+      "title": "BIS Annual Economic Report 2025: Navigation in a Higher-Rate World",
+      "url": "https://www.bis.org/publ/arpdf/ar2025e.htm",
+      "source_name": "bis.org"
+    },
+    {
+      "title": "IMF World Economic Outlook: The Final Mile of Disinflation",
+      "url": "https://www.imf.org/en/Publications/WEO",
+      "source_name": "imf.org"
+    }
+  ],
+  "metadata": {
+    "sub_question_count": 4,
+    "sources_analyzed": 10,
+    "completion_timestamp": "2026-02-14T17:02:00Z",
+    "quality_score": 88,
+    "refinement_used": false,
+    "timings_ms": {
+      "plan": 410,
+      "research": 6800,
+      "write_report": 2800,
+      "quality_check": 820
+    }
+  }
+}

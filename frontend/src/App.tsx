@@ -21,7 +21,7 @@ interface UpsertOptions {
 
 function App() {
   const [message, setMessage] = useState(
-    "Should company X expand into Southeast Asian markets in 2026? Consider regulatory risks, key competitors, and infrastructure requirements."
+    "What are the main causes of inflation and how do central banks respond?"
   );
   const [threadId, setThreadId] = useState<string | undefined>(undefined);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
@@ -256,7 +256,7 @@ function App() {
             Multi-agent intelligence cockpit with live tracing, source confidence, and threaded memory
           </p>
         </div>
-        <div className="status-chip">{statusText}</div>
+        <div className={`status-chip ${isRunning ? "running" : ""}`}>{statusText}</div>
       </header>
 
       <main className="layout">
@@ -315,7 +315,7 @@ function App() {
                 <span className="muted">Thread ID</span>
                 <code>{threadId ?? "new thread will be created"}</code>
               </div>
-              <button type="submit" disabled={isRunning}>
+              <button type="submit" disabled={isRunning} className={isRunning ? "running-btn" : ""}>
                 {isRunning ? "Running..." : "Run Research"}
               </button>
             </div>

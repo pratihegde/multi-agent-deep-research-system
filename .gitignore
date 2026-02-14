@@ -40,3 +40,7 @@ frontend/*.tsbuildinfo
 Thumbs.db
 .idea/
 .vscode/
+
+# Local run artifacts
+test_*.txt
+final_*.txt

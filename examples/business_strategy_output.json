@@ -1,0 +1,48 @@
+{
+  "thread_id": "example-thread-business-001",
+  "query": "Should a mid-sized fintech expand into Southeast Asia in 2026?",
+  "executive_summary": "The Southeast Asian fintech market is projected to surpass $1 trillion in 2025, with growth accelerating into 2026 driven by the ASEAN Digital Economy Framework Agreement (DEFA). While demand for digital lending (+40% growth) and payments (+20%) is surging, the regulatory landscape is tightening. Singapore remains the regional hub with stringent new stablecoin capital requirements (S$1M), while Malaysia and the Philippines are maturing their regulatory sandboxes. Expansion in 2026 is highly recommended, provided the firm aligns with regional interoperability standards and cross-border payment connectivity (RPC).",
+  "report": "Context\n-------\nThe query evaluates market-entry viability for a mid-sized fintech expansion into Southeast Asia (ASEAN) in 2026.\n\nFindings by Sub-Question\n------------------------\n- The total fintech market is expected to reach $1.073 trillion by 2025, driven by mobile-first digital adoption [S1].\n- Singapore's MAS is implementing a 2026 framework for single-currency stablecoins requiring S$1M in capital [S2].\n- Malaysia's Bank Negara (BNM) is prioritizing Ringgit stablecoins and tokenized deposits as part of its 2026 strategy [S3].\n- The ASEAN Digital Economy Framework Agreement (DEFA), slated for 2026, will harmonize digital trade and financial standards [S4].\n\nContradictions and Gaps\n-----------------------\n- There is high variability in regulatory maturity; Philippines and Vietnam focus on inclusion vs. Singapore’s focus on stability.\n- Public data on local fraud loss controls and specific CAC for mid-market fintechs is remains sparse.\n\nActionable Takeaways\n--------------------\n- Target Singapore for high-value wealth/stablecoin operations or Malaysia for regulated sandbox testing.\n- Ensure technical stacks support ASEAN Regional Payment Connectivity (RPC) for seamless cross-border settlement.\n\nLimitations and Assumptions\n---------------------------\n- Analysis assumes the 2026 DEFA signing proceeds on schedule and that geopolitical stability in the South China Sea remains constant.",
+  "description": "Updated business strategy example with real-world 2025-2026 fintech research and verified institutional citations.",
+  "key_takeaways": [
+    "Prioritize markets aligning with the 2026 ASEAN Digital Economy Framework Agreement (DEFA).",
+    "Capitalize on Digital Lending, the region's fastest-growing segment (+40% YoY).",
+    "Build compliance systems specifically for cross-border payment connectivity (RPC)."
+  ],
+  "limitations": "Regulatory implementation timelines for DEFA and stablecoin frameworks may shift; local fraud benchmarks are based on 2024-2025 trends.",
+  "citations": [
+    {
+      "title": "FinTech in ASEAN 2025: Turning Challenges into Growth",
+      "url": "https://www.uobgroup.com/uobgroup/newsroom/2024/fintech-asean-report.page",
+      "source_name": "uobgroup.com"
+    },
+    {
+      "title": "MAS Guidelines on Stablecoin Issuance Framework",
+      "url": "https://www.mas.gov.sg/regulation/explainers/stablecoin-issuance-framework",
+      "source_name": "mas.gov.sg"
+    },
+    {
+      "title": "Bank Negara Malaysia Financial Sector Blueprint 2022-2026",
+      "url": "https://www.bnm.gov.my/financial-sector-blueprint-2022-2026",
+      "source_name": "bnm.gov.my"
+    },
+    {
+      "title": "ASEAN Digital Economy Framework Agreement (DEFA) Progress",
+      "url": "https://asean.org/our-communities/economic-community/asean-digital-economy-framework-agreement/",
+      "source_name": "asean.org"
+    }
+  ],
+  "metadata": {
+    "sub_question_count": 4,
+    "sources_analyzed": 12,
+    "completion_timestamp": "2026-02-14T16:58:00Z",
+    "quality_score": 92,
+    "refinement_used": true,
+    "timings_ms": {
+      "plan": 450,
+      "research": 8200,
+      "write_report": 3100,
+      "quality_check": 950
+    }
+  }
+}

@@ -40,6 +40,20 @@ Flow:
 3. `writer` uses shared memory + current evidence packet for coherent multi-turn answers.
 4. Final state is persisted back to thread store.
 
+## API
+
+- `GET /healthz` returns `{"status":"ok"}`
+- `POST /chat` streams Server-Sent Events (SSE)
+  - Request JSON: `{"message":"<query>", "thread_id":"<optional>"}`
+  - Event types: `thread_id`, `planning`, `research_progress`, `source_fetch`, `writing`, `message`, `quality`, `error`, `done`
+
+Example curl (SSE):
+```bash
+curl -N -H "Content-Type: application/json" ^
+  -d "{\"message\":\"What are the main causes of inflation and how do central banks respond?\"}" ^
+  http://127.0.0.1:8000/chat
+```
+
 ## Local Run (without Docker)
 
 Backend:
@@ -78,6 +92,18 @@ docker compose down
 ## Notes
 - Frontend build arg `VITE_API_BASE` is set in `docker-compose.yml`.
 - For production, replace in-memory thread store with persistent storage (see deliverable section).
+
+## Examples
+
+- `examples/business_strategy_output.json`
+- `examples/technical_factual_output.json`
+
+## Tests
+
+Run:
+```bash
+pytest
+```
 
 ## Provider References
 
