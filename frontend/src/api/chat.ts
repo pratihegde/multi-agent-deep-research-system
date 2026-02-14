@@ -15,8 +15,10 @@ export async function startChatSSE(
   payload: StreamPayload,
   handlers: Handlers
 ): Promise<void> {
-  const apiBase = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
-  const response = await fetch(`${apiBase}/chat`, {
+  const configuredBase = String(import.meta.env.VITE_API_BASE ?? "").trim();
+  const apiBase = configuredBase.replace(/\/+$/, "");
+  const chatUrl = apiBase ? `${apiBase}/chat` : "/chat";
+  const response = await fetch(chatUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)

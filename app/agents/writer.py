@@ -20,6 +20,14 @@ REPORT_SYSTEM = (
     "Follow the exact section headers provided."
 )
 
+REQUIRED_HEADERS = (
+    "Context",
+    "Findings by Sub-Question",
+    "Contradictions and Gaps",
+    "Actionable Takeaways",
+    "Limitations and Assumptions",
+)
+
 
 def _chunk_text(text: str, chunk_size: int = 450) -> list[str]:
     return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)] or [""]
@@ -222,6 +230,10 @@ async def stream_report_chunks(
         )
     except Exception:
         report_text = ""
+
+    # Enforce the assignment-safe report shape even if the LLM drifts.
+    if report_text and any(header not in report_text for header in REQUIRED_HEADERS):
+        report_text = _fallback_report(query, compressed_notes, anchored_citations).report
 
     summary_prompt = textwrap.dedent(
         f"""
