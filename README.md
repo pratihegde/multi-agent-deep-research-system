@@ -89,6 +89,22 @@ docker compose up --build
 docker compose down
 ```
 
+## Railway (Single-Service Option)
+
+This repo can be deployed as **one Railway service** using Nginx to:
+- serve the built frontend static files
+- reverse-proxy `/chat` (SSE) and `/healthz` to the FastAPI backend
+
+Files:
+- `Dockerfile.railway`
+- `deploy/railway/nginx.conf.template`
+- `deploy/railway/start.sh`
+
+Railway settings:
+- Set the Dockerfile path to `Dockerfile.railway` (Railway supports custom Dockerfile paths).
+- Ensure environment variables include your API keys.
+- Railway injects `PORT`; Nginx listens on `PORT` and proxies to `127.0.0.1:8000`.
+
 ## Notes
 - Frontend build arg `VITE_API_BASE` is set in `docker-compose.yml`.
 - For production, replace in-memory thread store with persistent storage (see deliverable section).
