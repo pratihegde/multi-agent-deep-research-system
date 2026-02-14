@@ -31,7 +31,12 @@ function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [sources, setSources] = useState<SourceFetchEvent[]>([]);
   const [traces, setTraces] = useState<TraceEvent[]>([]);
+  const formRef = useRef<HTMLFormElement | null>(null);
   const activeThreadRef = useRef<string | undefined>(threadId);
+  const lastLogRef = useRef<string>("");
+  const seenLogLinesRef = useRef<Set<string>>(new Set());
+  const seenSourceEventsRef = useRef<Set<string>>(new Set());
+  const seenTraceEventsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     activeThreadRef.current = threadId;
@@ -44,6 +49,14 @@ function App() {
   }, [isRunning, doneEvent]);
 
   function pushLog(line: string) {
+    if (seenLogLinesRef.current.has(line)) {
+      return;
+    }
+    seenLogLinesRef.current.add(line);
+    if (line === lastLogRef.current) {
+      return;
+    }
+    lastLogRef.current = line;
     setLogs((prev) => [...prev, `${new Date().toLocaleTimeString()}  ${line}`]);
   }
 
@@ -58,9 +71,7 @@ function App() {
       const existing = prev.find((item) => item.id === id);
       const nextQueries = existing
         ? addQuery
-          ? existing.queries[existing.queries.length - 1] === query
-            ? existing.queries
-            : [...existing.queries, query]
+          ? Array.from(new Set([...existing.queries, query]))
           : existing.queries
         : [query];
       const updated: ThreadSummary = existing
@@ -92,6 +103,10 @@ function App() {
     setStreamReport("");
     setSources([]);
     setTraces([]);
+    seenSourceEventsRef.current = new Set();
+    seenTraceEventsRef.current = new Set();
+    seenLogLinesRef.current = new Set();
+    lastLogRef.current = "";
     setLogs([`${new Date().toLocaleTimeString()}  Switched to thread ${nextThreadId}`]);
   }
 
@@ -102,6 +117,10 @@ function App() {
     setStreamReport("");
     setSources([]);
     setTraces([]);
+    seenSourceEventsRef.current = new Set();
+    seenTraceEventsRef.current = new Set();
+    seenLogLinesRef.current = new Set();
+    lastLogRef.current = "";
     setLogs([`${new Date().toLocaleTimeString()}  Created new thread context`]);
   }
 
@@ -115,6 +134,10 @@ function App() {
     setStreamReport("");
     setSources([]);
     setTraces([]);
+    seenSourceEventsRef.current = new Set();
+    seenTraceEventsRef.current = new Set();
+    seenLogLinesRef.current = new Set();
+    lastLogRef.current = "";
     setLogs([]);
     setMessage("");
     if (requestedThreadId) {
@@ -140,22 +163,55 @@ function App() {
                 break;
               case "planning":
                 pushLog(`Planner created ${data.sub_question_count} sub-questions`);
+                if (Array.isArray(data.sub_questions)) {
+                  for (const sq of data.sub_questions) {
+                    const id = String(sq.id ?? "?");
+                    const priority = String(sq.priority ?? "?");
+                    const question = String(sq.question ?? "");
+                    const queries = Array.isArray(sq.search_queries)
+                      ? sq.search_queries.map((q: unknown) => String(q)).join(" | ")
+                      : "";
+                    pushLog(`[plan] ${id} p${priority}: ${question}`);
+                    if (queries) {
+                      pushLog(`[plan] ${id} queries: ${queries}`);
+                    }
+                  }
+                }
                 break;
               case "research_progress":
                 pushLog(`${data.sub_question_id}: ${data.status} (${data.evidence_count ?? 0} evidence)`);
                 break;
               case "source_fetch":
-                setSources((prev) => [...prev, data as SourceFetchEvent]);
+                {
+                  const src = data as SourceFetchEvent;
+                  const key = `${src.sub_question_id}|${src.status}|${src.url}`;
+                  if (!seenSourceEventsRef.current.has(key)) {
+                    seenSourceEventsRef.current.add(key);
+                    setSources((prev) => [...prev, src]);
+                  }
+                }
                 pushLog(`Source ${data.status}: ${data.source_name}`);
                 break;
               case "trace":
-                setTraces((prev) => [...prev, data as TraceEvent]);
+                {
+                  const tr = data as TraceEvent;
+                  const key = `${tr.node}|${tr.status}|${tr.timestamp}|${tr.duration_ms ?? ""}`;
+                  if (!seenTraceEventsRef.current.has(key)) {
+                    seenTraceEventsRef.current.add(key);
+                    setTraces((prev) => [...prev, tr]);
+                  }
+                }
                 break;
               case "quality":
                 pushLog(`Quality score: ${data.score} (${data.passed ? "pass" : "needs refinement"})`);
                 break;
               case "writing":
-                pushLog("Writer started generating report");
+                setStreamReport("");
+                if ((data.rewrite_iteration ?? 0) > 0) {
+                  pushLog(`Writer started rewrite pass ${data.rewrite_iteration}`);
+                } else {
+                  pushLog("Writer started generating report");
+                }
                 break;
               case "message":
                 if (typeof data.chunk === "string") {
@@ -239,12 +295,18 @@ function App() {
             </div>
           </section>
 
-          <form className="query-form" onSubmit={onSubmit}>
+          <form className="query-form" onSubmit={onSubmit} ref={formRef}>
             <label htmlFor="query">{threadId ? "Follow-up Query" : "Research Query"}</label>
             <textarea
               id="query"
               value={message}
               onChange={(e) => setMessage(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  formRef.current?.requestSubmit();
+                }
+              }}
               rows={4}
               placeholder={threadId ? "Ask a follow-up in this thread..." : "Ask a deep research question..."}
             />

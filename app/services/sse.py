@@ -54,20 +54,31 @@ async def chat_event_stream(message: str, thread_id: str | None):
             if assistant_msgs:
                 prior_context = assistant_msgs[-1][:280]
 
+    shared_memory = dict(prior_state.get("shared_memory") or {})
+    shared_memory["thread_id"] = resolved_thread_id
+    shared_memory["recent_messages"] = (prior_state.get("history", []) or [])[-12:]
+    shared_memory["recent_reports"] = report_memories[-6:]
+    shared_memory["prior_context"] = prior_context[:900]
+    shared_memory.setdefault("open_gaps", [])
+
     initial_state = {
         "query": message,
         "thread_id": resolved_thread_id,
         "history": prior_state.get("history", []),
         "report_memories": report_memories,
+        "shared_memory": shared_memory,
         "prior_context": prior_context[:900],
         "research_notes": {},
         "citations": [],
         "errors": [],
         "trace_events": [],
         "refinement_used": False,
+        "quality_feedback": [],
         "metadata": {
             "start_timestamp": utc_now_iso(),
             "run_count": int(prior_state.get("metadata", {}).get("run_count", 0)) + 1,
+            "quality_iterations": 0,
+            "needs_rewrite": False,
         },
         "runtime": {
             "emit_event": emit,
@@ -132,23 +143,28 @@ async def chat_event_stream(message: str, thread_id: str | None):
         metadata=metadata,
     )
     await thread_store.append_message(resolved_thread_id, "assistant", final_report.report)
-    await thread_store.append_report_memory(
-        resolved_thread_id,
-        {
-            "query": message,
-            "executive_summary": final_report.executive_summary,
-            "key_takeaways": final_report.key_takeaways,
-            "limitations": final_report.limitations,
-            "citations": [
-                {
-                    "title": citation.title,
-                    "url": str(citation.url),
-                    "source_name": citation.source_name,
-                }
-                for citation in citations[:8]
-            ],
-            "completion_timestamp": metadata.completion_timestamp,
-        },
-    )
+    report_memory_entry = {
+        "query": message,
+        "executive_summary": final_report.executive_summary,
+        "key_takeaways": final_report.key_takeaways,
+        "limitations": final_report.limitations,
+        "citations": [
+            {
+                "title": citation.title,
+                "url": str(citation.url),
+                "source_name": citation.source_name,
+            }
+            for citation in citations[:8]
+        ],
+        "completion_timestamp": metadata.completion_timestamp,
+    }
+    await thread_store.append_report_memory(resolved_thread_id, report_memory_entry)
+    final_state_memory = dict(final_state.get("shared_memory") or {})
+    final_state_memory["recent_messages"] = (final_state.get("history", []) or [])[-12:]
+    final_state_memory["recent_reports"] = (
+        (final_state.get("report_memories", []) or []) + [report_memory_entry]
+    )[-6:]
+    final_state_memory["prior_context"] = final_report.executive_summary[:900]
+    final_state["shared_memory"] = final_state_memory
     await thread_store.save_state(resolved_thread_id, final_state)
     yield sse_event("done", done.model_dump(mode="json"))

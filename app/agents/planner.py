@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import textwrap
 
-from app.config import HARD_MAX_SUBQUESTIONS, MAX_QUERIES_PER_SUBQUESTION, MAX_SUBQUESTIONS, query_intent
+from app.config import HARD_MAX_SUBQUESTIONS, MAX_QUERIES_PER_SUBQUESTION, MAX_SUBQUESTIONS
 from app.models import Plan, SubQuestion
 from app.services.llm import call_openai_typed
 
@@ -13,8 +13,9 @@ PLANNER_SYSTEM = (
 )
 
 
-def planner_prompt(query: str, history: list[dict[str, str]]) -> str:
+def planner_prompt(query: str, history: list[dict[str, str]], shared_memory: dict | None = None) -> str:
     recent_history = _summarize_history(history)
+    memory_summary = _summarize_shared_memory(shared_memory or {})
     return textwrap.dedent(
         f"""
         User query:
@@ -22,6 +23,9 @@ def planner_prompt(query: str, history: list[dict[str, str]]) -> str:
 
         Recent thread history:
         {recent_history or "- (none)"}
+
+        Shared memory summary:
+        {memory_summary or "- (none)"}
 
         Requirements:
         - Output keys: sub_questions, assumptions.
@@ -31,6 +35,8 @@ def planner_prompt(query: str, history: list[dict[str, str]]) -> str:
         - priority is unique integer (1 = highest).
         - search_queries: 2 to 4 short focused web queries.
         - If user query is ambiguous, add explicit assumptions.
+        - If the query can be answered directly from recent thread history/context
+          (without web lookup), include assumption EXACTLY: SKIP_WEB_RESEARCH
         """
     ).strip()
 
@@ -58,6 +64,24 @@ def _summarize_history(history: list[dict[str, str]]) -> str:
     return "\n".join(reversed(selected))
 
 
+def _summarize_shared_memory(shared_memory: dict) -> str:
+    if not shared_memory:
+        return ""
+    lines: list[str] = []
+    recent_reports = shared_memory.get("recent_reports", []) or []
+    for idx, item in enumerate(recent_reports[-2:], start=1):
+        q = str(item.get("query", "")).strip()
+        s = str(item.get("executive_summary", "")).strip()
+        if q:
+            lines.append(f"- memory.report{idx}.query: {q[:160]}")
+        if s:
+            lines.append(f"- memory.report{idx}.summary: {s[:220]}")
+    unresolved = shared_memory.get("open_gaps", []) or []
+    for gap in unresolved[:3]:
+        lines.append(f"- memory.gap: {str(gap)[:180]}")
+    return "\n".join(lines)
+
+
 def _fallback_plan(query: str) -> Plan:
     base = [
         SubQuestion(
@@ -82,52 +106,6 @@ def _fallback_plan(query: str) -> Plan:
     return Plan(sub_questions=base, assumptions=["Fallback plan generated due to parser/model failure."])
 
 
-def _historical_plan(query: str) -> Plan:
-    # Deterministic historical decomposition improves reliability for timeline/community-history questions.
-    sub_questions = [
-        SubQuestion(
-            id="sq1",
-            question="What are the major historical periods and timeline for this topic?",
-            priority=1,
-            search_queries=[
-                f"{query} timeline",
-                f"{query} historical periods wikipedia",
-            ],
-        ),
-        SubQuestion(
-            id="sq2",
-            question="Which dynasties, rulers, or institutions shaped this history?",
-            priority=2,
-            search_queries=[
-                f"{query} dynasties rulers",
-                f"{query} political history sources",
-            ],
-        ),
-        SubQuestion(
-            id="sq3",
-            question="What cultural, linguistic, and social shifts occurred over time?",
-            priority=3,
-            search_queries=[
-                f"{query} cultural history",
-                f"{query} social linguistic changes",
-            ],
-        ),
-        SubQuestion(
-            id="sq4",
-            question="What are key modern interpretations, debates, and data gaps?",
-            priority=4,
-            search_queries=[
-                f"{query} historiography debate",
-                f"{query} research gaps",
-            ],
-        ),
-    ]
-    return Plan(
-        sub_questions=sub_questions,
-        assumptions=["Historical template plan used for stronger timeline coverage."],
-    )
-
-
 def _ensure_two_queries(queries: list[str], question: str) -> list[str]:
     deduped = [q.strip() for q in queries if q and q.strip()]
     if not deduped:
@@ -137,10 +115,12 @@ def _ensure_two_queries(queries: list[str], question: str) -> list[str]:
     return deduped[:MAX_QUERIES_PER_SUBQUESTION]
 
 
-async def run_planner(query: str, history: list[dict[str, str]], prior_context: str = "") -> Plan:
-    if query_intent(query) == "historical":
-        return _historical_plan(query)
-
+async def run_planner(
+    query: str,
+    history: list[dict[str, str]],
+    prior_context: str = "",
+    shared_memory: dict | None = None,
+) -> Plan:
     history_with_context = list(history)
     if prior_context:
         history_with_context.append(
@@ -149,7 +129,7 @@ async def run_planner(query: str, history: list[dict[str, str]], prior_context: 
                 "content": f"Prior context summary: {prior_context[:280]}",
             }
         )
-    prompt = planner_prompt(query=query, history=history_with_context)
+    prompt = planner_prompt(query=query, history=history_with_context, shared_memory=shared_memory)
     try:
         plan = await call_openai_typed(
             system_prompt=PLANNER_SYSTEM,

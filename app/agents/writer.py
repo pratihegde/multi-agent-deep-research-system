@@ -47,6 +47,19 @@ def _compress_research_notes(research_notes: dict) -> dict:
     return compressed
 
 
+def _compress_history(history: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    if not history:
+        return []
+    out: list[dict[str, str]] = []
+    for item in history[-8:]:
+        role = str(item.get("role", "user"))
+        content = " ".join(str(item.get("content", "")).split())
+        if not content:
+            continue
+        out.append({"role": role, "content": content[:280]})
+    return out
+
+
 def _build_citation_anchors(citations: list[Citation]) -> list[dict]:
     selected = citations[:MAX_ACCEPTED_SOURCES_TOTAL]
     anchored: list[dict] = []
@@ -118,18 +131,36 @@ async def _stream_report_text(
     query: str,
     compressed_notes: dict,
     anchored_citations: list[dict],
+    conversation_history: list[dict[str, str]],
+    shared_memory: dict | None,
+    quality_feedback: list[str] | None,
+    rewrite_iteration: int,
     emit_event: EmitEvent,
 ) -> str:
     notes_json = json.dumps(compressed_notes, ensure_ascii=False, default=str)
     citations_json = json.dumps(anchored_citations, ensure_ascii=False)
+    history_json = json.dumps(conversation_history, ensure_ascii=False)
+    memory_json = json.dumps(shared_memory or {}, ensure_ascii=False)
 
     prompt = textwrap.dedent(
         f"""
         Query:
         {query}
 
+        Rewrite iteration:
+        {rewrite_iteration}
+
+        Quality feedback to address:
+        {json.dumps(quality_feedback or [], ensure_ascii=False)}
+
         Evidence packet (JSON):
         {notes_json}
+
+        Conversation memory (JSON):
+        {history_json}
+
+        Shared memory (JSON):
+        {memory_json}
 
         Citation anchors (JSON):
         {citations_json}
@@ -146,6 +177,8 @@ async def _stream_report_text(
           Limitations and Assumptions\n---------------------------
         - Within findings, max 3 bullets per sub-question
         - Use citation anchors like [S1], [S2] inline
+        - If evidence packet is sparse but conversation memory contains direct context,
+          answer from conversation memory and state that explicitly.
         """
     ).strip()
 
@@ -164,10 +197,15 @@ async def stream_report_chunks(
     query: str,
     research_notes: dict,
     citations: list[Citation],
+    history: list[dict[str, str]] | None,
+    shared_memory: dict | None,
     quality_score: int | None,
+    quality_feedback: list[str] | None,
+    rewrite_iteration: int,
     emit_event: EmitEvent,
 ) -> FinalReport:
     compressed_notes = _compress_research_notes(research_notes)
+    compressed_history = _compress_history(history)
     anchored_citations = _build_citation_anchors(citations)
 
     report_text = ""
@@ -176,6 +214,10 @@ async def stream_report_chunks(
             query=query,
             compressed_notes=compressed_notes,
             anchored_citations=anchored_citations,
+            conversation_history=compressed_history,
+            shared_memory=shared_memory,
+            quality_feedback=quality_feedback,
+            rewrite_iteration=rewrite_iteration,
             emit_event=emit_event,
         )
     except Exception:

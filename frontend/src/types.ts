@@ -46,7 +46,8 @@ export interface SourceFetchEvent {
 export interface TraceEvent {
   thread_id: string;
   node: string;
-  status: "start" | "end";
+  status: "start" | "end" | "detail";
   timestamp: string;
   duration_ms?: number;
+  extra?: Record<string, unknown>;
 }

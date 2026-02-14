@@ -10,11 +10,13 @@ class GraphState(TypedDict, total=False):
     thread_id: str
     history: list[dict[str, str]]
     report_memories: list[dict[str, Any]]
+    shared_memory: dict[str, Any]
     prior_context: str
     plan: Plan
     research_notes: dict[str, ResearchNote]
     citations: list[Citation]
     quality: QualityCheck
+    quality_feedback: list[str]
     final_report: FinalReport
     errors: list[dict[str, Any]]
     trace_events: list[dict[str, Any]]

@@ -11,13 +11,20 @@ MAX_RESULTS_PER_QUERY = 3
 MAX_ACCEPTED_SOURCES_TOTAL = 15
 MAX_ACCEPTED_PER_SUBQUESTION = 4
 MAX_DOMAIN_REPEAT = 2
+MIN_UNIQUE_DOMAINS_PER_SUBQUESTION = 3
 SOURCE_POLICY = "hybrid_trusted_first"
 HISTORICAL_SOURCE_POLICY = "wikipedia_plus_top5"
 
 ENABLE_REFINEMENT = True
 MAX_REFINEMENT_LOOPS = 1
-TAVILY_MAX_CALLS_PER_RUN = int(os.getenv("TAVILY_MAX_CALLS_PER_RUN", "16"))
+# Global search request budget across all providers for one workflow run.
+# Backward compatible with older env name TAVILY_MAX_CALLS_PER_RUN.
+SEARCH_MAX_CALLS_PER_RUN = int(
+    os.getenv("SEARCH_MAX_CALLS_PER_RUN", os.getenv("TAVILY_MAX_CALLS_PER_RUN", "40"))
+)
 TAVILY_FAIL_FAST_ON_QUOTA = os.getenv("TAVILY_FAIL_FAST_ON_QUOTA", "true").lower() == "true"
+USE_EXA_PRIMARY = os.getenv("USE_EXA_PRIMARY", "true").lower() == "true"
+USE_FIRECRAWL_PRIMARY = os.getenv("USE_FIRECRAWL_PRIMARY", "true").lower() == "true"
 
 QUALITY_MIN_TOTAL_SOURCES = 8
 QUALITY_MIN_TRUSTED_RATIO = 0.60
@@ -48,8 +55,9 @@ TRUSTED_DOMAIN_SEEDS = sorted(TIER_A_DOMAINS | TIER_B_DOMAINS)
 HISTORICAL_DOMAIN_SEEDS = ["wikipedia.org"]
 HISTORICAL_MAX_RESULTS_PER_QUERY = 5
 
-ACCEPTANCE_SCORE_THRESHOLD = 0.62
-HISTORICAL_ACCEPTANCE_SCORE_THRESHOLD = 0.50
+# Retrieval scoring now prioritizes relevance + recency (not domain credibility).
+ACCEPTANCE_SCORE_THRESHOLD = 0.44
+HISTORICAL_ACCEPTANCE_SCORE_THRESHOLD = 0.38
 
 
 def _normalize_domain(domain: str) -> str:

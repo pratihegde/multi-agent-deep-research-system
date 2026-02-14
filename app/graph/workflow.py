@@ -5,7 +5,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from app.config import ENABLE_REFINEMENT, HARD_MAX_QUERIES_PER_SUBQUESTION, MAX_REFINEMENT_LOOPS
+from app.config import ENABLE_REFINEMENT, MAX_REFINEMENT_LOOPS
 from app.agents.planner import run_planner
 from app.agents.quality import run_quality_check
 from app.agents.researcher import run_research_batch
@@ -24,7 +24,13 @@ async def _emit_event(state: GraphState, event: str, data: dict) -> None:
         await emitter(event, payload)
 
 
-async def _emit_trace(state: GraphState, node: str, status: str, duration_ms: int | None = None) -> None:
+async def _emit_trace(
+    state: GraphState,
+    node: str,
+    status: str,
+    duration_ms: int | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
     payload: dict[str, Any] = {
         "node": node,
         "status": status,
@@ -32,6 +38,8 @@ async def _emit_trace(state: GraphState, node: str, status: str, duration_ms: in
     }
     if duration_ms is not None:
         payload["duration_ms"] = duration_ms
+    if extra:
+        payload["extra"] = extra
     await _emit_event(state, "trace", payload)
 
 
@@ -42,21 +50,56 @@ def _dedupe_citations(citations: list[Citation]) -> list[Citation]:
     return list(output.values())
 
 
+def _ensure_shared_memory(state: GraphState) -> dict[str, Any]:
+    shared = state.get("shared_memory") or {}
+    shared.setdefault("thread_id", state.get("thread_id"))
+    shared.setdefault("recent_messages", state.get("history", [])[-12:])
+    shared.setdefault("recent_reports", state.get("report_memories", [])[-6:])
+    shared.setdefault("open_gaps", [])
+    state["shared_memory"] = shared
+    return shared
+
+
 async def plan_node(state: GraphState) -> GraphState:
     t0 = trace_start(state, "plan")
+    await _emit_trace(state, "plan", "start")
     try:
+        shared_memory = _ensure_shared_memory(state)
         plan = await run_planner(
             query=state["query"],
             history=state.get("history", []),
             prior_context=state.get("prior_context", ""),
+            shared_memory=shared_memory,
         )
         state["plan"] = plan
+        skip_web = any(
+            "SKIP_WEB_RESEARCH" in str(assumption).upper()
+            for assumption in (plan.assumptions or [])
+        )
+        state.setdefault("metadata", {})["skip_web_research"] = skip_web
         await _emit_event(
             state,
             "planning",
             {
                 "sub_question_count": len(plan.sub_questions),
                 "sub_questions": [sq.model_dump(mode="json") for sq in plan.sub_questions],
+                "skip_web_research": skip_web,
+            },
+        )
+        await _emit_trace(
+            state,
+            "plan",
+            "detail",
+            extra={
+                "sub_questions": [
+                    {
+                        "id": sq.id,
+                        "priority": sq.priority,
+                        "question": sq.question,
+                        "search_queries": sq.search_queries,
+                    }
+                    for sq in plan.sub_questions
+                ]
             },
         )
         return state
@@ -73,6 +116,7 @@ async def research_node(state: GraphState) -> GraphState:
     t0 = trace_start(state, "research")
     await _emit_trace(state, "research", "start")
     try:
+        _ensure_shared_memory(state)
         plan = state["plan"]
         notes, new_citations, errors = await run_research_batch(
             sub_questions=plan.sub_questions,
@@ -96,44 +140,29 @@ async def research_node(state: GraphState) -> GraphState:
         await _emit_trace(state, "research", "end", duration_ms=duration_ms)
 
 
-def _inject_refinement_queries(state: GraphState, queries: list[str]) -> None:
-    if not queries:
-        return
-    plan = state["plan"]
-    for idx, query in enumerate(queries):
-        sq = plan.sub_questions[idx % len(plan.sub_questions)]
-        if query not in sq.search_queries and len(sq.search_queries) < HARD_MAX_QUERIES_PER_SUBQUESTION:
-            sq.search_queries.append(query)
-    state["plan"] = plan
-
-
 async def quality_check_node(state: GraphState) -> GraphState:
     t0 = trace_start(state, "quality_check")
     await _emit_trace(state, "quality_check", "start")
     try:
+        _ensure_shared_memory(state)
         quality = await run_quality_check(
             query=state["query"],
-            plan=state["plan"],
-            research_notes=state.get("research_notes", {}),
+            report=state.get("final_report").report if state.get("final_report") else "",
+            executive_summary=(
+                state.get("final_report").executive_summary if state.get("final_report") else ""
+            ),
+            citations=state.get("citations", []),
         )
         state["quality"] = quality
-        refinement_count = int(state.get("metadata", {}).get("refinement_count", 0))
-        quota_exhausted = any(
-            "quota exceeded" in str(err.get("detail", "")).lower()
-            or "usage limit" in str(err.get("detail", "")).lower()
-            for err in state.get("errors", [])
+        quality_iterations = int(state.get("metadata", {}).get("quality_iterations", 0))
+        needs_rewrite = ENABLE_REFINEMENT and (not quality.passed) and (
+            quality_iterations < MAX_REFINEMENT_LOOPS
         )
-        needs_refinement = (
-            ENABLE_REFINEMENT
-            and (not quality.passed)
-            and (refinement_count < MAX_REFINEMENT_LOOPS)
-            and (not quota_exhausted)
-        )
-        state.setdefault("metadata", {})["needs_refinement"] = needs_refinement
-        if needs_refinement:
+        state.setdefault("metadata", {})["needs_rewrite"] = needs_rewrite
+        if needs_rewrite:
             state["refinement_used"] = True
-            state.setdefault("metadata", {})["refinement_count"] = refinement_count + 1
-            _inject_refinement_queries(state, quality.refinement_queries)
+            state.setdefault("metadata", {})["quality_iterations"] = quality_iterations + 1
+            state["quality_feedback"] = quality.issues[:4]
         await _emit_event(
             state,
             "quality",
@@ -147,7 +176,7 @@ async def quality_check_node(state: GraphState) -> GraphState:
     except Exception as exc:
         state.setdefault("errors", []).append({"stage": "quality_check", "detail": str(exc)})
         await _emit_event(state, "error", {"stage": "quality_check", "detail": str(exc)})
-        state.setdefault("metadata", {})["needs_refinement"] = False
+        state.setdefault("metadata", {})["needs_rewrite"] = False
         return state
     finally:
         duration_ms = trace_end(state, "quality_check", t0)
@@ -156,9 +185,18 @@ async def quality_check_node(state: GraphState) -> GraphState:
 
 async def write_report_node(state: GraphState) -> GraphState:
     t0 = trace_start(state, "write_report")
-    await _emit_event(state, "writing", {"status": "started"})
+    rewrite_iteration = int(state.get("metadata", {}).get("quality_iterations", 0))
+    await _emit_event(
+        state,
+        "writing",
+        {
+            "status": "started",
+            "rewrite_iteration": rewrite_iteration,
+        },
+    )
     await _emit_trace(state, "write_report", "start")
     try:
+        shared_memory = _ensure_shared_memory(state)
         final_report = await stream_report_chunks(
             query=state["query"],
             research_notes={
@@ -166,10 +204,19 @@ async def write_report_node(state: GraphState) -> GraphState:
                 for key, note in state.get("research_notes", {}).items()
             },
             citations=state.get("citations", []),
+            history=state.get("history", []),
+            shared_memory=shared_memory,
             quality_score=(state.get("quality").score if state.get("quality") else None),
+            quality_feedback=state.get("quality_feedback", []),
+            rewrite_iteration=rewrite_iteration,
             emit_event=lambda event, data: _emit_event(state, event, data),
         )
         state["final_report"] = final_report
+
+        latest_gaps: list[str] = []
+        for note in state.get("research_notes", {}).values():
+            latest_gaps.extend(note.gaps[:2])
+        shared_memory["open_gaps"] = list(dict.fromkeys(latest_gaps))[:8]
         return state
     except Exception as exc:
         state.setdefault("errors", []).append({"stage": "write_report", "detail": str(exc)})
@@ -181,10 +228,16 @@ async def write_report_node(state: GraphState) -> GraphState:
 
 
 def quality_router(state: GraphState) -> str:
-    needs_refinement = state.get("metadata", {}).get("needs_refinement", False)
-    if needs_refinement:
-        return "research"
-    return "write_report"
+    needs_rewrite = state.get("metadata", {}).get("needs_rewrite", False)
+    if needs_rewrite:
+        return "write_report"
+    return "end"
+
+
+def plan_router(state: GraphState) -> str:
+    if state.get("metadata", {}).get("skip_web_research", False):
+        return "write_report"
+    return "research"
 
 
 def build_workflow() -> Any:
@@ -194,15 +247,22 @@ def build_workflow() -> Any:
     graph.add_node("quality_check", quality_check_node)
     graph.add_node("write_report", write_report_node)
     graph.add_edge(START, "plan")
-    graph.add_edge("plan", "research")
-    graph.add_edge("research", "quality_check")
     graph.add_conditional_edges(
-        "quality_check",
-        quality_router,
+        "plan",
+        plan_router,
         {
             "research": "research",
             "write_report": "write_report",
         },
     )
-    graph.add_edge("write_report", END)
+    graph.add_edge("research", "write_report")
+    graph.add_edge("write_report", "quality_check")
+    graph.add_conditional_edges(
+        "quality_check",
+        quality_router,
+        {
+            "write_report": "write_report",
+            "end": END,
+        },
+    )
     return graph.compile()

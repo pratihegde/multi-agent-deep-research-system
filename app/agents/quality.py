@@ -1,165 +1,135 @@
 from __future__ import annotations
 
+import re
 import textwrap
 
-from app.config import QUALITY_MIN_TOTAL_SOURCES, QUALITY_MIN_TRUSTED_RATIO, domain_is_trusted, query_intent
-from app.models import Plan, QualityCheck, ResearchNote
+from pydantic import BaseModel, Field
+
+from app.models import Citation, QualityCheck
 from app.services.llm import call_openai_typed
-from app.tools.tavily_search import normalize_url
 
 QUALITY_SYSTEM = (
-    "You are a report quality gate. Return ONLY JSON. "
-    "Score coverage, evidence quality, contradiction handling, and practical usefulness."
+    "You are a strict quality checker for research reports. "
+    "Fail reports that lack balanced perspective, explicit limitations, or citation grounding."
 )
 
+SECTION_HEADERS = (
+    "Context",
+    "Findings by Sub-Question",
+    "Contradictions and Gaps",
+    "Actionable Takeaways",
+    "Limitations and Assumptions",
+)
 
-def _source_quality_stats(research_notes: dict[str, ResearchNote]) -> tuple[int, int]:
-    unique_urls: set[str] = set()
-    trusted_count = 0
-
-    for note in research_notes.values():
-        for finding in note.findings:
-            url_key = normalize_url(str(finding.url))
-            if url_key in unique_urls:
-                continue
-            unique_urls.add(url_key)
-            if domain_is_trusted(finding.source_name):
-                trusted_count += 1
-
-    return len(unique_urls), trusted_count
+CITATION_ANCHOR_RE = re.compile(r"\[S\d+\]")
 
 
-def _fallback_quality(plan: Plan, research_notes: dict[str, ResearchNote], intent: str) -> QualityCheck:
-    covered = len([sq for sq in plan.sub_questions if sq.id in research_notes])
-    total = len(plan.sub_questions)
-    total_sources, trusted_sources = _source_quality_stats(research_notes)
-    trusted_ratio = (trusted_sources / total_sources) if total_sources else 0.0
-    required_trusted_ratio = 0.25 if intent == "historical" else QUALITY_MIN_TRUSTED_RATIO
+class _LLMQualityOutput(BaseModel):
+    pass_check: bool
+    feedback: list[str] = Field(default_factory=list)
 
+
+def _deterministic_quality(
+    *,
+    report: str,
+    executive_summary: str,
+    citations: list[Citation],
+) -> tuple[int, list[str]]:
     issues: list[str] = []
-    if covered < total:
-        issues.append("Not all sub-questions are covered.")
-    if total_sources < QUALITY_MIN_TOTAL_SOURCES:
-        issues.append(f"Only {total_sources} accepted sources; expected at least {QUALITY_MIN_TOTAL_SOURCES}.")
-    if trusted_ratio < required_trusted_ratio:
-        issues.append(
-            f"Trusted source ratio is {trusted_ratio:.0%}; expected at least {required_trusted_ratio:.0%}."
-        )
+    score = 100
 
-    hard_pass = (covered == total) and (total_sources >= QUALITY_MIN_TOTAL_SOURCES) and (
-        trusted_ratio >= required_trusted_ratio
-    )
-    score = min(100, int((covered / max(total, 1)) * 40 + min(total_sources, 12) * 4 + trusted_ratio * 35))
+    if len(report.strip()) < 900:
+        issues.append("Report body is too short; add more concrete findings.")
+        score -= 18
 
-    if hard_pass:
-        return QualityCheck(passed=True, score=max(score, 75), issues=[])
-    return QualityCheck(
-        passed=False,
-        score=max(35, min(score, 74)),
-        issues=issues,
-        refinement_queries=_default_refinement_queries(intent),
-    )
+    missing_sections = [header for header in SECTION_HEADERS if header not in report]
+    if missing_sections:
+        issues.append("Missing required sections: " + ", ".join(missing_sections) + ".")
+        score -= 25
+
+    summary_lines = [line for line in executive_summary.splitlines() if line.strip()]
+    if len(summary_lines) < 4:
+        issues.append("Executive summary is too thin; target 5-8 concise lines.")
+        score -= 12
+
+    text_lower = report.lower()
+    if "limitations" not in text_lower and "assumption" not in text_lower:
+        issues.append("Limitations/assumptions are not explicit.")
+        score -= 15
+
+    anchor_count = len(CITATION_ANCHOR_RE.findall(report))
+    if anchor_count < 3 and len(citations) < 4:
+        issues.append("Citation grounding is weak; include inline anchors like [S1].")
+        score -= 18
+
+    balance_markers = ("risk", "opportunit", "trade-off", "counter")
+    balance_hits = sum(1 for marker in balance_markers if marker in text_lower)
+    if balance_hits < 2:
+        issues.append("Analysis appears one-sided; include balanced perspective.")
+        score -= 12
+
+    return max(0, min(100, score)), issues
 
 
-def _default_refinement_queries(intent: str) -> list[str]:
-    if intent == "historical":
-        return [
-            "wikipedia historical overview",
-            "encyclopedia cultural history",
-            "scholar historical background",
-        ]
+def _default_rewrite_guidance() -> list[str]:
     return [
-        "latest official statistics site:worldbank.org",
-        "policy analysis site:oecd.org",
-        "central bank publication site:federalreserve.gov",
+        "Improve balance: cover both upside and downside explicitly.",
+        "Strengthen limitations and assumptions with concrete caveats.",
+        "Add citation anchors [S#] in key claims.",
+        "Tighten executive summary to 5-8 specific lines.",
     ]
 
 
 async def run_quality_check(
     query: str,
-    plan: Plan,
-    research_notes: dict[str, ResearchNote],
+    report: str,
+    executive_summary: str,
+    citations: list[Citation],
 ) -> QualityCheck:
-    intent = query_intent(query)
-    required_trusted_ratio = 0.25 if intent == "historical" else QUALITY_MIN_TRUSTED_RATIO
-
-    coverage_lines: list[str] = []
-    covered = 0
-    for sq in plan.sub_questions:
-        note = research_notes.get(sq.id)
-        if not note:
-            coverage_lines.append(f"- {sq.id}: missing")
-            continue
-        covered += 1
-        coverage_lines.append(
-            f"- {sq.id}: bullets={len(note.evidence_bullets)}, findings={len(note.findings)}, gaps={len(note.gaps)}"
-        )
-
-    total_sources, trusted_sources = _source_quality_stats(research_notes)
-    trusted_ratio = (trusted_sources / total_sources) if total_sources else 0.0
-
-    prompt = textwrap.dedent(
-        f"""
-        Original query:
-        {query}
-
-        Coverage summary:
-        {chr(10).join(coverage_lines)}
-
-        Source quality summary:
-        - total_unique_sources: {total_sources}
-        - trusted_sources: {trusted_sources}
-        - trusted_ratio: {trusted_ratio:.2f}
-
-        Return:
-        - passed (bool)
-        - score (0-100)
-        - issues (list)
-        - refinement_queries (list up to 5)
-
-        Strictness:
-        - pass only if all sub-questions have meaningful evidence
-        - pass only if total sources >= {QUALITY_MIN_TOTAL_SOURCES}
-        - pass only if trusted ratio >= {required_trusted_ratio:.2f}
-        """
-    ).strip()
-
-    hard_pass = (covered == len(plan.sub_questions)) and (total_sources >= QUALITY_MIN_TOTAL_SOURCES) and (
-        trusted_ratio >= required_trusted_ratio
+    base_score, deterministic_issues = _deterministic_quality(
+        report=report,
+        executive_summary=executive_summary,
+        citations=citations,
     )
 
-    hard_issues: list[str] = []
-    if covered < len(plan.sub_questions):
-        hard_issues.append("Coverage gap: one or more sub-questions are missing sufficient findings.")
-    if total_sources < QUALITY_MIN_TOTAL_SOURCES:
-        hard_issues.append(
-            f"Evidence volume below threshold: {total_sources} < {QUALITY_MIN_TOTAL_SOURCES}."
-        )
-    if trusted_ratio < required_trusted_ratio:
-        hard_issues.append(
-            f"Trusted source ratio below threshold: {trusted_ratio:.0%} < {required_trusted_ratio:.0%}."
-        )
+    llm_pass = True
+    llm_feedback: list[str] = []
+    prompt = textwrap.dedent(
+        f"""
+        Query:
+        {query}
 
+        Executive Summary:
+        {executive_summary}
+
+        Report:
+        {report[:7000]}
+
+        Return JSON:
+        - pass_check: boolean
+        - feedback: concise list of issues to fix (max 5)
+        """
+    ).strip()
     try:
-        llm_quality = await call_openai_typed(
+        llm_out = await call_openai_typed(
             system_prompt=QUALITY_SYSTEM,
             user_prompt=prompt,
-            schema=QualityCheck,
+            schema=_LLMQualityOutput,
         )
+        llm_pass = llm_out.pass_check
+        llm_feedback = llm_out.feedback[:5]
     except Exception:
-        return _fallback_quality(plan, research_notes, intent)
+        llm_pass = True
+        llm_feedback = []
 
-    score = int((0.6 * llm_quality.score) + (0.4 * (90 if hard_pass else 55)))
-    issues = list(dict.fromkeys(llm_quality.issues + hard_issues))
-    passed = hard_pass and llm_quality.passed
-
-    refinement_queries = llm_quality.refinement_queries
-    if not passed and not refinement_queries:
-        refinement_queries = _default_refinement_queries(intent)
+    combined_issues = list(dict.fromkeys(deterministic_issues + llm_feedback))[:8]
+    passed = (base_score >= 72) and llm_pass and (len(deterministic_issues) <= 1)
+    if passed:
+        return QualityCheck(passed=True, score=max(72, base_score), issues=[], refinement_queries=[])
 
     return QualityCheck(
-        passed=passed,
-        score=max(0, min(100, score)),
-        issues=issues,
-        refinement_queries=refinement_queries[:5],
+        passed=False,
+        score=min(base_score, 71),
+        issues=combined_issues,
+        refinement_queries=(combined_issues[:4] or _default_rewrite_guidance()),
     )

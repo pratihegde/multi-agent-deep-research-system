@@ -15,20 +15,18 @@ from app.config import (
     MAX_ACCEPTED_PER_SUBQUESTION,
     MAX_ACCEPTED_SOURCES_TOTAL,
     MAX_DOMAIN_REPEAT,
+    MIN_UNIQUE_DOMAINS_PER_SUBQUESTION,
     MAX_QUERIES_PER_SUBQUESTION,
     MAX_RESULTS_PER_QUERY,
-    SOURCE_POLICY,
+    SEARCH_MAX_CALLS_PER_RUN,
     TAVILY_FAIL_FAST_ON_QUOTA,
-    TAVILY_MAX_CALLS_PER_RUN,
-    TRUSTED_DOMAIN_SEEDS,
-    credibility_score_for_domain,
     query_intent,
     simulated_failure_subquestions,
 )
 from app.models import Citation, ResearchNote, ResearchSynthesis, SourceFinding, SubQuestion
 from app.services.llm import call_openai_typed
-from app.tools.tavily_search import SearchToolError, normalize_url, tavily_search
-from app.tools.wiki_search import WikiSearchError, wikipedia_search
+from app.tools.tavily_search import SearchToolError, normalize_url
+from app.tools.web_search_router import search_web_parallel
 
 EmitEvent = Callable[[str, dict], Awaitable[None]]
 
@@ -152,10 +150,9 @@ def _recency_proxy(finding: SourceFinding) -> float:
 
 
 def _acceptance_score(sub_question: SubQuestion, query: str, finding: SourceFinding) -> float:
-    credibility = credibility_score_for_domain(finding.source_name)
     relevance = _relevance_score(sub_question, query, finding)
     recency = _recency_proxy(finding)
-    return (0.55 * credibility) + (0.35 * relevance) + (0.10 * recency)
+    return (0.80 * relevance) + (0.20 * recency)
 
 
 def _fallback_synthesis(findings: list[SourceFinding]) -> ResearchSynthesis:
@@ -211,29 +208,13 @@ async def _collect_candidates(
     phase: str,
     intent: str,
 ) -> list[SourceFinding]:
-    if phase == "wikipedia":
-        return await tavily_search(
-            query=query,
-            max_results=min(HISTORICAL_MAX_RESULTS_PER_QUERY, 3),
-            include_domains=HISTORICAL_DOMAIN_SEEDS,
-        )
-
     if intent == "historical":
-        return await tavily_search(query=query, max_results=HISTORICAL_MAX_RESULTS_PER_QUERY)
-
-    if SOURCE_POLICY == "hybrid_trusted_first" and phase == "trusted":
-        return await tavily_search(
+        return await search_web_parallel(
             query=query,
-            max_results=MAX_RESULTS_PER_QUERY,
-            include_domains=TRUSTED_DOMAIN_SEEDS,
+            max_results=HISTORICAL_MAX_RESULTS_PER_QUERY,
+            include_domains=HISTORICAL_DOMAIN_SEEDS if phase == "historical_hint" else None,
         )
-    return await tavily_search(query=query, max_results=MAX_RESULTS_PER_QUERY)
-
-
-async def _collect_fallback_candidates(query: str, intent: str) -> list[SourceFinding]:
-    if intent == "historical":
-        return await wikipedia_search(query=query, max_results=6)
-    return await wikipedia_search(query=query, max_results=4)
+    return await search_web_parallel(query=query, max_results=MAX_RESULTS_PER_QUERY)
 
 
 async def research_sub_question(
@@ -264,9 +245,9 @@ async def research_sub_question(
         await emit_event("error", {"stage": "research", "sub_question_id": sq.id, "detail": detail})
 
     if intent == "historical":
-        phases = ["wikipedia", "broad"]
+        phases = ["historical_hint", "broad"]
     else:
-        phases = ["wikipedia", "trusted", "broad"] if SOURCE_POLICY == "hybrid_trusted_first" else ["wikipedia", "broad"]
+        phases = ["broad"]
 
     for query in sq.search_queries[:MAX_QUERIES_PER_SUBQUESTION]:
         if budget.global_exhausted() or budget.subquestion_cap_reached(sq.id):
@@ -291,12 +272,13 @@ async def research_sub_question(
                                 "stage": "research",
                                 "sub_question_id": sq.id,
                                 "detail": (
-                                    f"Tavily call cap reached ({controls.calls_made}/{controls.max_calls}); "
-                                    "switching to Wikipedia fallback for this run."
+                                    f"Search call cap reached ({controls.calls_made}/{controls.max_calls}) "
+                                    "(SEARCH_MAX_CALLS_PER_RUN); "
+                                    "skipping remaining searches for this run."
                                 ),
                             },
                         )
-                    use_fallback = True
+                    break
 
             if not use_fallback:
                 try:
@@ -306,9 +288,7 @@ async def research_sub_question(
                     quota_hit = "exceeds your plan's set usage limit" in detail.lower()
                     if quota_hit and TAVILY_FAIL_FAST_ON_QUOTA:
                         should_emit_quota = await controls.mark_quota_exhausted()
-                        quota_msg = (
-                            "Tavily quota exceeded; switching to Wikipedia fallback for this run."
-                        )
+                        quota_msg = "Tavily quota exceeded; continuing with Exa/Firecrawl only."
                         if should_emit_quota:
                             await emit_event(
                                 "error",
@@ -336,8 +316,12 @@ async def research_sub_question(
 
             if use_fallback:
                 try:
-                    findings = await _collect_fallback_candidates(query=query, intent=intent)
-                except WikiSearchError as exc:
+                    findings = await search_web_parallel(
+                        query=query,
+                        max_results=MAX_RESULTS_PER_QUERY,
+                        include_domains=HISTORICAL_DOMAIN_SEEDS if intent == "historical" else None,
+                    )
+                except SearchToolError as exc:
                     errors.append({"stage": "research", "sub_question_id": sq.id, "detail": str(exc)})
                     await emit_event(
                         "error",
@@ -356,15 +340,20 @@ async def research_sub_question(
             )
 
             accepted_in_phase = 0
+            existing_domains = {item.source_name for item in collected.values()}
             for score, finding in scored:
                 threshold = (
                     HISTORICAL_ACCEPTANCE_SCORE_THRESHOLD
                     if intent == "historical"
                     else ACCEPTANCE_SCORE_THRESHOLD
                 )
-                if intent == "historical" and finding.source_name == "wikipedia.org":
-                    threshold = min(threshold, 0.35)
                 if score < threshold:
+                    continue
+                # First pass favors domain diversity when we still have low domain spread.
+                if (
+                    len(existing_domains) < MIN_UNIQUE_DOMAINS_PER_SUBQUESTION
+                    and finding.source_name in existing_domains
+                ):
                     continue
 
                 accepted, reason = await budget.try_accept(sq.id, finding)
@@ -384,6 +373,7 @@ async def research_sub_question(
 
                 url_key = normalize_url(str(finding.url))
                 collected[url_key] = finding
+                existing_domains.add(finding.source_name)
                 accepted_in_phase += 1
                 await emit_event(
                     "source_fetch",
@@ -399,47 +389,54 @@ async def research_sub_question(
                 if budget.global_exhausted() or budget.subquestion_cap_reached(sq.id):
                     break
 
-            # If wikipedia already gave one high-relevance source, continue to verification phases.
-            if phase == "wikipedia":
-                continue
-            # In trusted/broad phases, stop once we have enough accepted findings.
-            if phase in {"trusted", "broad"} and len(collected) >= 3:
+            # Second pass: fill remaining slots even if domains repeat.
+            if (
+                len(existing_domains) < MIN_UNIQUE_DOMAINS_PER_SUBQUESTION
+                and not budget.subquestion_cap_reached(sq.id)
+            ):
+                for score, finding in scored:
+                    threshold = (
+                        HISTORICAL_ACCEPTANCE_SCORE_THRESHOLD
+                        if intent == "historical"
+                        else ACCEPTANCE_SCORE_THRESHOLD
+                    )
+                    if score < threshold:
+                        continue
+                    accepted, reason = await budget.try_accept(sq.id, finding)
+                    if not accepted:
+                        if reason == "deduped":
+                            await emit_event(
+                                "source_fetch",
+                                {
+                                    "sub_question_id": sq.id,
+                                    "source_name": finding.source_name,
+                                    "title": finding.title,
+                                    "url": str(finding.url),
+                                    "status": "deduped",
+                                },
+                            )
+                        continue
+                    url_key = normalize_url(str(finding.url))
+                    collected[url_key] = finding
+                    existing_domains.add(finding.source_name)
+                    accepted_in_phase += 1
+                    await emit_event(
+                        "source_fetch",
+                        {
+                            "sub_question_id": sq.id,
+                            "source_name": finding.source_name,
+                            "title": finding.title,
+                            "url": str(finding.url),
+                            "status": "fetched",
+                        },
+                    )
+                    if budget.global_exhausted() or budget.subquestion_cap_reached(sq.id):
+                        break
+
+            if phase in {"historical_hint", "broad"} and len(collected) >= 3:
                 break
             if phase == "broad" and accepted_in_phase > 0 and len(collected) >= 3:
                 break
-
-    if not collected:
-        try:
-            emergency = await _collect_fallback_candidates(
-                query=f"{sq.question} {query}",
-                intent=intent,
-            )
-            for finding in emergency[:3]:
-                accepted, _ = await budget.try_accept(sq.id, finding)
-                if not accepted:
-                    continue
-                url_key = normalize_url(str(finding.url))
-                collected[url_key] = finding
-                await emit_event(
-                    "source_fetch",
-                    {
-                        "sub_question_id": sq.id,
-                        "source_name": finding.source_name,
-                        "title": finding.title,
-                        "url": str(finding.url),
-                        "status": "fetched",
-                    },
-                )
-        except WikiSearchError as exc:
-            errors.append({"stage": "research", "sub_question_id": sq.id, "detail": str(exc)})
-            await emit_event(
-                "error",
-                {
-                    "stage": "research",
-                    "sub_question_id": sq.id,
-                    "detail": str(exc),
-                },
-            )
 
     findings_list = list(collected.values())
     synthesis = await _synthesize_research(sq, findings_list)
@@ -490,7 +487,7 @@ async def run_research_batch(
 ) -> tuple[dict[str, ResearchNote], list[Citation], list[dict]]:
     sem = asyncio.Semaphore(max_concurrency)
     budget = _BudgetManager(existing_notes=existing_notes)
-    controls = _RunControls(max_calls=TAVILY_MAX_CALLS_PER_RUN)
+    controls = _RunControls(max_calls=SEARCH_MAX_CALLS_PER_RUN)
     simulated_failures = simulated_failure_subquestions()
     intent = query_intent(query)
 
